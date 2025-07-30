@@ -4,6 +4,8 @@ use alloy::{
     rpc::types::Filter,
 };
 use dotenv::dotenv;
+use sqlx::mysql::MySqlPoolOptions;
+use std::env;
 use std::error::Error;
 use tokio_stream::StreamExt;
 
@@ -20,8 +22,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let threshold_amount = U256::from(THRESHOLD) * U256::from(10u64).pow(U256::from(DECIMALS));
     let usdc_address = USDC_ADDRESS.parse::<Address>()?;
 
-    let ws_rpc_url =
-        std::env::var("WS_RPC_URL").map_err(|_| "Environment variable WS_RPC_URL is not set")?;
+    let ws_rpc_url = env::var("WS_RPC_URL").expect("Environment variable WS_RPC_URL is not set");
+    let database_url =
+        env::var("DATABASE_URL").expect("Environment variable DATABASE_URL is not set");
+
+    let pool = MySqlPoolOptions::new()
+        .max_connections(5)
+        .connect(&database_url)
+        .await?;
 
     let ws = WsConnect::new(&ws_rpc_url);
     let provider = ProviderBuilder::new().connect_ws(ws).await?;
@@ -46,11 +54,45 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
 
         for log in logs {
-            let event = log.into_inner();
-            let value = U256::from_be_slice(&event.data.data[..32]);
-            if value > threshold_amount {
-                let parsed_value = u256_to_f64(value, DECIMALS);
-                println!("More than a Million: {parsed_value} USDC \n");
+            if let Some(tx_hash) = log.transaction_hash {
+                let event = log.into_inner();
+                let value = U256::from_be_slice(&event.data.data[..32]);
+                if value > threshold_amount {
+                    let topics = event.data.topics();
+                    let from_address = Address::from_slice(&topics[1][12..])
+                        .to_string()
+                        .to_lowercase();
+                    let to_address = Address::from_slice(&topics[2][12..])
+                        .to_string()
+                        .to_lowercase();
+
+                    sqlx::query(
+                        r#"
+                        INSERT INTO transfers (
+                            tx_hash, block_number, from_address, to_address, amount, token_address
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                    "#,
+                    )
+                    .bind(tx_hash.to_string().to_lowercase())
+                    .bind(block_number)
+                    .bind(&from_address)
+                    .bind(&to_address)
+                    .bind(value.to_string())
+                    .bind(usdc_address.to_string().to_lowercase())
+                    .execute(&pool)
+                    .await?;
+
+                    println!(
+                        "High-value transfer: from {} to {} amount {} USDC (Tx: {})",
+                        from_address,
+                        to_address,
+                        to_human_readable_amount(value, DECIMALS),
+                        tx_hash
+                    );
+                }
+            } else {
+                println!("Log with missing transaction_hash skipped");
+                continue;
             }
         }
     }
@@ -58,6 +100,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn u256_to_f64(value: U256, decimals: u32) -> f64 {
-    value.to_string().parse::<f64>().unwrap_or(0.0) / 10f64.powi(decimals as i32)
+fn to_human_readable_amount(amount: U256, decimals: u32) -> f64 {
+    let scale = 10u64.pow(decimals) as f64;
+    let amount_f64 = amount.to_string().parse::<f64>().unwrap_or(0.0);
+    amount_f64 / scale
 }
