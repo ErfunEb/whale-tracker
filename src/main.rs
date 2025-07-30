@@ -4,6 +4,8 @@ use alloy::{
     rpc::types::Filter,
 };
 use dotenv::dotenv;
+use sqlx::mysql::MySqlPoolOptions;
+use std::env;
 use std::error::Error;
 use tokio_stream::StreamExt;
 
@@ -20,8 +22,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let threshold_amount = U256::from(THRESHOLD) * U256::from(10u64).pow(U256::from(DECIMALS));
     let usdc_address = USDC_ADDRESS.parse::<Address>()?;
 
-    let ws_rpc_url =
-        std::env::var("WS_RPC_URL").map_err(|_| "Environment variable WS_RPC_URL is not set")?;
+    let ws_rpc_url = env::var("WS_RPC_URL").expect("Environment variable WS_RPC_URL is not set");
+    let database_url =
+        env::var("DATABASE_URL").expect("Environment variable DATABASE_URL is not set");
+
+    let pool = MySqlPoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await?;
 
     let ws = WsConnect::new(&ws_rpc_url);
     let provider = ProviderBuilder::new().connect_ws(ws).await?;
