@@ -11,3 +11,5 @@ tokio-stream = "0.1.17"
 sqlx = { version = "0.8", features = ["runtime-tokio", "mysql", "macros"] }
 log = "0.4.28"
 env_logger = "0.11.8"
+reqwest = { version = "0.12.23", features = ["blocking"] }
+scraper = "0.24.0"
